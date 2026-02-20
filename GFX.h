@@ -2,438 +2,368 @@
 #define GFX_H
 
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <circle/types.h>
-#include <circle/screen.h>
 
-// ===== FONT STRUCTURES (Compatible with Adafruit GFX) =====
+#define MAX(a,b)  ((a)>(b)?(a):(b))
+#define MIN(a,b)  ((a)<(b)?(a):(b))
+#define SWAP(a,b) do { auto _t=(a);(a)=(b);(b)=_t; } while(0)
+#define ABS(a)    ((a)<0?-(a):(a))
+
+// ─── Backend selection ────────────────────────────────────────────────────────
+// Define GFX_USE_OPENGL_ES before including this header (or in your Makefile)
+// to use the hardware-accelerated OpenGL ES 2.0 back-end via libgraphics.
+// Without that define the original CScreenDevice / framebuffer back-end is used.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#ifdef GFX_USE_OPENGL_ES
+  #include <graphics/eglrenderingcontext.h>   // libgraphics: CEglRenderingContext
+  #include <GLES2/gl2.h>               // OpenGL ES 2.0 (from libgraphics/circle)
+  #include <EGL/egl.h>
+#else
+  #include <circle/screen.h>
+#endif
+
+// ===== FONT STRUCTURES (Compatible with Adafruit GFX) ========================
 
 /// Font data stored PER GLYPH
 typedef struct {
-    uint16_t bitmapOffset; ///< Pointer into GFXfont->bitmap
-    uint8_t width;         ///< Bitmap dimensions in pixels
-    uint8_t height;        ///< Bitmap dimensions in pixels
-    uint8_t xAdvance;      ///< Distance to advance cursor (x axis)
-    int8_t xOffset;        ///< X dist from cursor pos to UL corner
-    int8_t yOffset;        ///< Y dist from cursor pos to UL corner
+    u16 bitmapOffset; ///< Pointer into GFXfont->bitmap
+    u8  width;        ///< Bitmap dimensions in pixels
+    u8  height;       ///< Bitmap dimensions in pixels
+    u8  xAdvance;     ///< Distance to advance cursor (x axis)
+    s8  xOffset;      ///< X dist from cursor pos to UL corner
+    s8  yOffset;      ///< Y dist from cursor pos to UL corner
 } GFXglyph;
 
 /// Data stored for FONT AS A WHOLE
 typedef struct {
-    uint8_t *bitmap;  ///< Glyph bitmaps, concatenated
-    GFXglyph *glyph;  ///< Glyph array
-    uint16_t first;   ///< ASCII extents (first char)
-    uint16_t last;    ///< ASCII extents (last char)
-    uint8_t yAdvance; ///< Newline distance (y axis)
+    u8  *bitmap;  ///< Glyph bitmaps, concatenated
+    GFXglyph *glyph;   ///< Glyph array
+    u16  first;   ///< ASCII extents (first char)
+    u16  last;    ///< ASCII extents (last char)
+    u8   yAdvance;///< Newline distance (y axis)
 } GFXfont;
+
+// ===== MULTI-BUFFER SUPPORT (Software Renderer Only) ==========================
+
+/// Buffer index enumeration for easy reference
+enum BufferIndex {
+    BUFFER_0 = 0,
+    BUFFER_1 = 1,
+    BUFFER_2 = 2
+};
+
+/// Structure describing a single frame buffer
+typedef struct {
+    uint16_t *pData;      ///< Pointer to buffer data
+    boolean   bOwned;     ///< Whether CircleGFX allocated this buffer
+    boolean   bReady;     ///< Whether buffer is ready for display
+} FrameBuffer;
 
 /**
  * @class CircleGFX
- * @brief Adafruit GFX compatible graphics library for circle-rpi
+ * @brief Adafruit GFX-compatible graphics library for Circle.
  *
- * This class provides a familiar Adafruit GFX-like API for drawing
- * graphics on a circle-rpi framebuffer.
+ * Two back-ends are available, selected at compile time:
+ *
+ *   1. Framebuffer back-end (default)
+ *      Uses CScreenDevice + CBcmFrameBuffer.  No extra libraries needed.
+ *      Supports triple-buffering for smooth rendering without tearing.
+ *
+ *   2. OpenGL ES 2.0 back-end  (define GFX_USE_OPENGL_ES)
+ *      Uses libgraphics (CEglRenderingContext) + the VideoCore GPU on the Pi.
+ *      fillRect / fillScreen / drawRGBBitmap are GPU-accelerated.
+ *      All other primitives still run on the CPU and call the same
+ *      GL draw path so that the image stays consistent.
  */
 class CircleGFX {
 public:
-    /**
-     * @brief Constructor
-     * @param pScreen Pointer to CScreenDevice
-     */
-    CircleGFX(CScreenDevice *pScreen);
 
+    // ──────────────────────────────────────────────────────────────────────────
+    // Constructors – one per back-end
+    // ──────────────────────────────────────────────────────────────────────────
+
+#ifdef GFX_USE_OPENGL_ES
     /**
-     * @brief Virtual destructor
+     * @brief Constructor for the OpenGL ES 2.0 back-end.
+     * @param pContext  Pointer to an already-initialised CEglRenderingContext.
+     *                  Call pContext->Initialize() BEFORE constructing CircleGFX.
      */
+    explicit CircleGFX(CEglRenderingContext *pContext);
+#else
+    /**
+     * @brief Constructor for the framebuffer back-end.
+     * @param pScreen Pointer to CScreenDevice (must already be initialised).
+     */
+    explicit CircleGFX(CScreenDevice *pScreen);
+#endif
+
     virtual ~CircleGFX();
 
-    // ===== CORE DRAW API =====
+    // ===== CORE DRAW API =====================================================
 
-    /**
-     * @brief Draw a single pixel
-     * @param x X coordinate
-     * @param y Y coordinate
-     * @param color 16-bit RGB565 color
-     */
-    void drawPixel(int16_t x, int16_t y, uint16_t color);
+    void drawPixel      (int16_t x, int16_t y, uint16_t color);
+    void startWrite     (void);
+    void endWrite       (void);
+    void writePixel     (int16_t x, int16_t y, uint16_t color);
+    void writeFillRect  (int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
+    void writeFastVLine (int16_t x, int16_t y, int16_t h, uint16_t color);
+    void writeFastHLine (int16_t x, int16_t y, int16_t w, uint16_t color);
+    void writeLine      (int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color);
 
-    /**
-     * @brief Start a transaction (batch drawing)
-     */
-    void startWrite(void);
+    // ===== BASIC DRAW API ====================================================
 
-    /**
-     * @brief End a transaction (flush if needed)
-     */
-    void endWrite(void);
+    void drawFastVLine  (int16_t x, int16_t y, int16_t h, uint16_t color);
+    void drawFastHLine  (int16_t x, int16_t y, int16_t w, uint16_t color);
+    void drawLine       (int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color);
+    void drawRect       (int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
+    void fillRect       (int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
+    void fillScreen     (uint16_t color);
 
-    /**
-     * @brief Write pixel during transaction
-     * @param x X coordinate
-     * @param y Y coordinate
-     * @param color 16-bit RGB565 color
-     */
-    void writePixel(int16_t x, int16_t y, uint16_t color);
+    void drawCircle     (int16_t x0, int16_t y0, int16_t r, uint16_t color);
+    void fillCircle     (int16_t x0, int16_t y0, int16_t r, uint16_t color);
 
-    /**
-     * @brief Write filled rectangle during transaction
-     * @param x X coordinate of top-left
-     * @param y Y coordinate of top-left
-     * @param w Width in pixels
-     * @param h Height in pixels
-     * @param color 16-bit RGB565 color
-     */
-    void writeFillRect(int16_t x, int16_t y, int16_t w, int16_t h,
-                      uint16_t color);
+    void drawRoundRect  (int16_t x, int16_t y, int16_t w, int16_t h, int16_t radius, uint16_t color);
+    void fillRoundRect  (int16_t x, int16_t y, int16_t w, int16_t h, int16_t radius, uint16_t color);
 
-    /**
-     * @brief Write vertical line during transaction
-     * @param x X coordinate
-     * @param y Starting Y coordinate
-     * @param h Height in pixels
-     * @param color 16-bit RGB565 color
-     */
-    void writeFastVLine(int16_t x, int16_t y, int16_t h, uint16_t color);
+    void drawTriangle   (int16_t x0, int16_t y0, int16_t x1, int16_t y1,
+                         int16_t x2, int16_t y2, uint16_t color);
+    void fillTriangle   (int16_t x0, int16_t y0, int16_t x1, int16_t y1,
+                         int16_t x2, int16_t y2, uint16_t color);
 
-    /**
-     * @brief Write horizontal line during transaction
-     * @param x X coordinate
-     * @param y Y coordinate
-     * @param w Width in pixels
-     * @param color 16-bit RGB565 color
-     */
-    void writeFastHLine(int16_t x, int16_t y, int16_t w, uint16_t color);
+    // ===== BITMAP DRAW API ===================================================
 
-    /**
-     * @brief Write line during transaction
-     * @param x0 Starting X coordinate
-     * @param y0 Starting Y coordinate
-     * @param x1 Ending X coordinate
-     * @param y1 Ending Y coordinate
-     * @param color 16-bit RGB565 color
-     */
-    void writeLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1,
-                   uint16_t color);
+    void drawBitmap(int16_t x, int16_t y, const uint8_t bitmap[],
+                    int16_t w, int16_t h, uint16_t color);
+    void drawBitmap(int16_t x, int16_t y, const uint8_t bitmap[],
+                    int16_t w, int16_t h, uint16_t color, uint16_t bg);
+    void drawBitmap(int16_t x, int16_t y, uint8_t *bitmap,
+                    int16_t w, int16_t h, uint16_t color);
+    void drawBitmap(int16_t x, int16_t y, uint8_t *bitmap,
+                    int16_t w, int16_t h, uint16_t color, uint16_t bg);
 
-    // ===== BASIC DRAW API =====
+    void drawXBitmap(int16_t x, int16_t y, const uint8_t bitmap[],
+                     int16_t w, int16_t h, uint16_t color);
 
-    /**
-     * @brief Draw a vertical line
-     * @param x X coordinate
-     * @param y Starting Y coordinate
-     * @param h Height in pixels
-     * @param color 16-bit RGB565 color
-     */
-    void drawFastVLine(int16_t x, int16_t y, int16_t h, uint16_t color);
+    void drawGrayscaleBitmap(int16_t x, int16_t y, const uint8_t bitmap[], int16_t w, int16_t h);
+    void drawGrayscaleBitmap(int16_t x, int16_t y, uint8_t *bitmap,        int16_t w, int16_t h);
+    void drawGrayscaleBitmap(int16_t x, int16_t y, const uint8_t bitmap[],
+                             const uint8_t mask[], int16_t w, int16_t h);
+    void drawGrayscaleBitmap(int16_t x, int16_t y, uint8_t *bitmap,
+                             uint8_t *mask, int16_t w, int16_t h);
 
-    /**
-     * @brief Draw a horizontal line
-     * @param x X coordinate
-     * @param y Y coordinate
-     * @param w Width in pixels
-     * @param color 16-bit RGB565 color
-     */
-    void drawFastHLine(int16_t x, int16_t y, int16_t w, uint16_t color);
+    void drawRGBBitmap(int16_t x, int16_t y, const uint16_t bitmap[], int16_t w, int16_t h);
+    void drawRGBBitmap(int16_t x, int16_t y, uint16_t *bitmap,        int16_t w, int16_t h);
+    void drawRGBBitmap(int16_t x, int16_t y, const uint16_t bitmap[],
+                       const uint8_t mask[], int16_t w, int16_t h);
+    void drawRGBBitmap(int16_t x, int16_t y, uint16_t *bitmap,
+                       uint8_t *mask, int16_t w, int16_t h);
 
-    /**
-     * @brief Draw a line
-     * @param x0 Starting X coordinate
-     * @param y0 Starting Y coordinate
-     * @param x1 Ending X coordinate
-     * @param y1 Ending Y coordinate
-     * @param color 16-bit RGB565 color
-     */
-    void drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1,
-                  uint16_t color);
+    // ===== TEXT API ==========================================================
 
-    /**
-     * @brief Draw an empty rectangle
-     * @param x X coordinate of top-left
-     * @param y Y coordinate of top-left
-     * @param w Width in pixels
-     * @param h Height in pixels
-     * @param color 16-bit RGB565 color
-     */
-    void drawRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
+    void setCursor      (int16_t x, int16_t y);
+    void setTextColor   (uint16_t c);
+    void setTextColor   (uint16_t c, uint16_t bg);
+    void setTextSize    (uint8_t s);
+    void setTextSize    (uint8_t sx, uint8_t sy);
+    void setTextWrap    (bool w);
+    void drawChar       (int16_t x, int16_t y, unsigned char c,
+                         uint16_t color, uint16_t bg, uint8_t size);
+    void drawChar       (int16_t x, int16_t y, unsigned char c,
+                         uint16_t color, uint16_t bg, uint8_t size_x, uint8_t size_y);
+    void writeText      (const char *text);
+    void setFont        (const GFXfont *f = 0);
 
-    /**
-     * @brief Fill a rectangle
-     * @param x X coordinate of top-left
-     * @param y Y coordinate of top-left
-     * @param w Width in pixels
-     * @param h Height in pixels
-     * @param color 16-bit RGB565 color
-     */
-    void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color);
+    // ===== CONTROL API =======================================================
 
-    /**
-     * @brief Fill entire screen
-     * @param color 16-bit RGB565 color
-     */
-    void fillScreen(uint16_t color);
+    void    setRotation (uint8_t r);
+    uint8_t getRotation (void) const;
+    void    invertDisplay(bool i);
 
-    /**
-     * @brief Draw an empty circle
-     * @param x0 Center X coordinate
-     * @param y0 Center Y coordinate
-     * @param r Radius in pixels
-     * @param color 16-bit RGB565 color
-     */
-    void drawCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color);
+    // ===== DIMENSION API =====================================================
 
-    /**
-     * @brief Fill a circle
-     * @param x0 Center X coordinate
-     * @param y0 Center Y coordinate
-     * @param r Radius in pixels
-     * @param color 16-bit RGB565 color
-     */
-    void fillCircle(int16_t x0, int16_t y0, int16_t r, uint16_t color);
+    int16_t width()    const;
+    int16_t height()   const;
+    int16_t getCursorX() const;
+    int16_t getCursorY() const;
 
-    /**
-     * @brief Draw an empty rounded rectangle
-     * @param x X coordinate of top-left
-     * @param y Y coordinate of top-left
-     * @param w Width in pixels
-     * @param h Height in pixels
-     * @param radius Corner radius in pixels
-     * @param color 16-bit RGB565 color
-     */
-    void drawRoundRect(int16_t x, int16_t y, int16_t w, int16_t h,
-                      int16_t radius, uint16_t color);
+    // ===== COLOR HELPERS =====================================================
 
-    /**
-     * @brief Fill a rounded rectangle
-     * @param x X coordinate of top-left
-     * @param y Y coordinate of top-left
-     * @param w Width in pixels
-     * @param h Height in pixels
-     * @param radius Corner radius in pixels
-     * @param color 16-bit RGB565 color
-     */
-    void fillRoundRect(int16_t x, int16_t y, int16_t w, int16_t h,
-                       int16_t radius, uint16_t color);
-
-    /**
-     * @brief Draw a triangle
-     * @param x0 First point X coordinate
-     * @param y0 First point Y coordinate
-     * @param x1 Second point X coordinate
-     * @param y1 Second point Y coordinate
-     * @param x2 Third point X coordinate
-     * @param y2 Third point Y coordinate
-     * @param color 16-bit RGB565 color
-     */
-    void drawTriangle(int16_t x0, int16_t y0, int16_t x1, int16_t y1,
-                      int16_t x2, int16_t y2, uint16_t color);
-
-    /**
-     * @brief Fill a triangle
-     * @param x0 First point X coordinate
-     * @param y0 First point Y coordinate
-     * @param x1 Second point X coordinate
-     * @param y1 Second point Y coordinate
-     * @param x2 Third point X coordinate
-     * @param y2 Third point Y coordinate
-     * @param color 16-bit RGB565 color
-     */
-    void fillTriangle(int16_t x0, int16_t y0, int16_t x1, int16_t y1,
-                      int16_t x2, int16_t y2, uint16_t color);
-
-    // ===== TEXT API =====
-
-    /**
-     * @brief Set text cursor position
-     * @param x X coordinate
-     * @param y Y coordinate
-     */
-    void setCursor(int16_t x, int16_t y);
-
-    /**
-     * @brief Set text color (transparent background)
-     * @param c 16-bit RGB565 text color
-     */
-    void setTextColor(uint16_t c);
-
-    /**
-     * @brief Set text color with background
-     * @param c 16-bit RGB565 text color
-     * @param bg 16-bit RGB565 background color
-     */
-    void setTextColor(uint16_t c, uint16_t bg);
-
-    /**
-     * @brief Set text size (uniform scaling)
-     * @param s Text size multiplier (1 = default)
-     */
-    void setTextSize(uint8_t s);
-
-    /**
-     * @brief Set text size with independent X and Y scaling
-     * @param sx Text X size multiplier
-     * @param sy Text Y size multiplier
-     */
-    void setTextSize(uint8_t sx, uint8_t sy);
-
-    /**
-     * @brief Enable or disable text wrapping
-     * @param w true for wrapping, false for clipping
-     */
-    void setTextWrap(bool w);
-
-    /**
-     * @brief Draw a character
-     * @param x X coordinate
-     * @param y Y coordinate
-     * @param c Character to draw
-     * @param color 16-bit RGB565 color
-     * @param bg 16-bit RGB565 background color
-     * @param size Character size multiplier
-     */
-    void drawChar(int16_t x, int16_t y, unsigned char c, uint16_t color,
-                  uint16_t bg, uint8_t size);
-
-    /**
-     * @brief Draw a character with separate X/Y scaling
-     * @param x X coordinate
-     * @param y Y coordinate
-     * @param c Character to draw
-     * @param color 16-bit RGB565 color
-     * @param bg 16-bit RGB565 background color
-     * @param size_x Character X size multiplier
-     * @param size_y Character Y size multiplier
-     */
-    void drawChar(int16_t x, int16_t y, unsigned char c, uint16_t color,
-                  uint16_t bg, uint8_t size_x, uint8_t size_y);
-
-    /**
-     * @brief Write text string at current cursor position
-     * @param text Text string to write
-     * @note Uses current text color, size, and position
-     */
-    void writeText(const char *text);
-
-    /**
-     * @brief Set font for text rendering
-     * @param f Pointer to GFXfont structure (NULL for default bitmap font)
-     */
-    void setFont(const GFXfont *f = 0);
-
-    // ===== CONTROL API =====
-
-    /**
-     * @brief Set display rotation
-     * @param r Rotation (0, 1, 2, or 3)
-     */
-    void setRotation(uint8_t r);
-
-    /**
-     * @brief Get current rotation
-     * @return Rotation value (0, 1, 2, or 3)
-     */
-    uint8_t getRotation(void) const;
-
-    /**
-     * @brief Invert display colors
-     * @param i true to invert, false for normal
-     */
-    void invertDisplay(bool i);
-
-    // ===== DIMENSION API =====
-
-    /**
-     * @brief Get display width accounting for rotation
-     * @return Width in pixels
-     */
-    int16_t width(void) const;
-
-    /**
-     * @brief Get display height accounting for rotation
-     * @return Height in pixels
-     */
-    int16_t height(void) const;
-
-    /**
-     * @brief Get cursor X position
-     * @return X coordinate in pixels
-     */
-    int16_t getCursorX(void) const;
-
-    /**
-     * @brief Get cursor Y position
-     * @return Y coordinate in pixels
-     */
-    int16_t getCursorY(void) const;
-
-    // ===== COLOR HELPER FUNCTIONS =====
-
-    /**
-     * @brief Convert RGB888 to RGB565
-     * @param r Red component (0-255)
-     * @param g Green component (0-255)
-     * @param b Blue component (0-255)
-     * @return 16-bit RGB565 color
-     */
     static uint16_t color565(uint8_t r, uint8_t g, uint8_t b);
-
-    /**
-     * @brief Convert RGB888 to RGB565 from packed value
-     * @param rgb 32-bit RGB888 value
-     * @return 16-bit RGB565 color
-     */
     static uint16_t color565(uint32_t rgb);
 
+    // ===== OPENGL ES SPECIFIC ================================================
+#ifdef GFX_USE_OPENGL_ES
+    /// Call once per frame after all drawing is done to swap EGL buffers.
+    void swapBuffers();
+#else
+    // ===== MULTI-BUFFER API (Software Renderer Only) ==========================
+
+    /**
+     * @brief Enable multi-buffering mode (double or triple buffer).
+     *        Must be called AFTER constructor but before drawing.
+     *        Only available for software renderer (not OpenGL ES).
+     * @param numBuffers Number of buffers (2 or 3). Default is 2 (double-buffer).
+     * @return true if successful, false if allocation failed.
+     */
+    boolean enableMultiBuffer(uint8_t numBuffers = 2);
+
+    /**
+     * @brief Check if multi-buffering is enabled.
+     * @return true if multi-buffering is active.
+     */
+    boolean isMultiBuffered() const;
+
+    /**
+     * @brief Get the number of buffers currently allocated.
+     * @return Number of buffers (1, 2, or 3).
+     */
+    uint8_t getBufferCount() const;
+
+    /**
+     * @brief Get the index of the current drawing buffer.
+     * @return Buffer index (0, 1, or 2).
+     */
+    uint8_t getDrawBufferIndex() const;
+
+    /**
+     * @brief Get the index of the currently displayed buffer.
+     * @return Buffer index (0, 1, or 2).
+     */
+    uint8_t getDisplayBufferIndex() const;
+
+    /**
+     * @brief Swap to the next drawing buffer and update display.
+     *        Should be called once per frame.
+     *        Only affects software renderer.
+     */
+    void swapBuffers(boolean autoclear = true);
+
+    /**
+     * @brief Select which buffer to draw to (manual mode).
+     *        Use this if you want explicit control instead of automatic swapping.
+     * @param bufferIndex Buffer to select (0, 1, or 2).
+     * @return true if successful, false if index out of range.
+     */
+    boolean selectDrawBuffer(uint8_t bufferIndex);
+
+    /**
+     * @brief Select which buffer to display (manual mode).
+     *        Use this for explicit display buffer control.
+     * @param bufferIndex Buffer to display (0, 1, or 2).
+     * @return true if successful, false if index out of range.
+     */
+    boolean selectDisplayBuffer(uint8_t bufferIndex);
+
+    /**
+     * @brief Clear the specified buffer.
+     * @param bufferIndex Buffer to clear (0, 1, 2, or -1 for all).
+     * @param color Color to fill with (default black).
+     */
+    void clearBuffer(int8_t bufferIndex = -1, uint16_t color = 0);
+
+    /**
+     * @brief Get direct access to a buffer for low-level operations.
+     * @param bufferIndex Buffer to access (0, 1, or 2).
+     * @return Pointer to buffer data, or nullptr if invalid index.
+     */
+    uint16_t* getBuffer(uint8_t bufferIndex);
+
+    /**
+     * @brief Attach an external buffer for manual management.
+     *        Useful for pre-allocated memory or external buffer sources.
+     * @param bufferIndex Which buffer slot to use (0, 1, or 2).
+     * @param pBuffer Pointer to external buffer (must be width*height*2 bytes).
+     * @return true if successful.
+     */
+    boolean attachExternalBuffer(uint8_t bufferIndex, uint16_t *pBuffer);
+
+    /**
+     * @brief Detach an external buffer, allowing CircleGFX to clean up.
+     * @param bufferIndex Which buffer to detach.
+     * @return true if successful.
+     */
+    boolean detachExternalBuffer(uint8_t bufferIndex);
+
+#endif
+
 protected:
-    /**
-     * @brief Set pixel value in framebuffer memory
-     * @param x X coordinate
-     * @param y Y coordinate
-     * @param color 16-bit RGB565 color
-     */
-    void setPixel(int16_t x, int16_t y, uint16_t color);
 
-    /**
-     * @brief Get pixel value from framebuffer memory
-     * @param x X coordinate
-     * @param y Y coordinate
-     * @return 16-bit RGB565 color
-     */
-    uint16_t getPixel(int16_t x, int16_t y) const;
+    // Internal pixel access
+    void     setPixel (int16_t x, int16_t y, uint16_t color);
+    uint16_t getPixel (int16_t x, int16_t y) const;
 
-    // Helper for circle drawing (Bresenham)
-    void drawCircleHelper(int16_t x0, int16_t y0, int16_t r, uint8_t cornername,
-                          uint16_t color);
-    void fillCircleHelper(int16_t x0, int16_t y0, int16_t r, uint8_t cornername,
-                         int16_t delta, uint16_t color);
-
-    // Helper for rounded rectangle
+    // Circle / rounded-rect helpers
+    void drawCircleHelper  (int16_t x0, int16_t y0, int16_t r,
+                             uint8_t cornername, uint16_t color);
+    void fillCircleHelper  (int16_t x0, int16_t y0, int16_t r,
+                             uint8_t cornername, int16_t delta, uint16_t color);
     void drawFastVLineInternal(int16_t x, int16_t y, int16_t h, uint16_t color);
     void drawFastHLineInternal(int16_t x, int16_t y, int16_t w, uint16_t color);
 
-    CScreenDevice *m_pScreen;
+    // ── Back-end specific members ────────────────────────────────────────────
+#ifdef GFX_USE_OPENGL_ES
+    CEglRenderingContext *m_pGLContext;   ///< libgraphics OpenGL ES context
+
+    // GLSL program for flat-colour quads (fillRect / fillScreen)
+    GLuint m_shaderFlat;
+    GLuint m_uFlatColor;    ///< uniform location
+    GLuint m_uFlatMVP;      ///< uniform location
+    GLuint m_vboQuad;       ///< VBO for a unit quad
+
+    // GLSL program for textured quads (drawRGBBitmap)
+    GLuint m_shaderTex;
+    GLuint m_uTexMVP;       ///< uniform location
+    GLuint m_uTexSampler;   ///< uniform location
+
+    // Scratch texture re-used for bitmap uploads
+    GLuint m_scratchTex;
+    int16_t m_scratchW, m_scratchH;
+
+    // Private GL helpers
+    GLuint  compileShader  (GLenum type, const char *src);
+    GLuint  linkProgram    (GLuint vs, GLuint fs);
+    void    initGLResources();
+    void    drawGLRect     (int16_t x, int16_t y, int16_t w, int16_t h,
+                            float r, float g, float b, float a);
+    void    uploadAndDrawTex(int16_t x, int16_t y, int16_t w, int16_t h,
+                             const uint16_t *pixels);
+
+#else
+    CScreenDevice   *m_pScreen;
     CBcmFrameBuffer *m_pFrameBuffer;
+    uint32_t         m_depth;
+    uint32_t         m_pitch;
+    uint16_t        *m_pBuffer;
 
-    int16_t m_width;
-    int16_t m_height;
-    uint32_t m_depth;
-    uint32_t m_pitch;
-    uint16_t *m_pBuffer;
+    // ── Multi-buffer members (Software Renderer) ─────────────────────────────
+    FrameBuffer m_buffers[3];           ///< Up to 3 frame buffers
+    uint8_t     m_bufferCount;          ///< Number of allocated buffers (1, 2, or 3)
+    uint8_t     m_drawBufferIndex;      ///< Index of current drawing buffer
+    uint8_t     m_displayBufferIndex;   ///< Index of currently displayed buffer
+    boolean     m_multiBufferEnabled;   ///< Whether multi-buffering is active
 
-    // Text settings
-    int16_t m_cursorX;
-    int16_t m_cursorY;
-    uint16_t m_textColor;
-    uint16_t m_textBgColor;
-    uint8_t m_textSizeX;
-    uint8_t m_textSizeY;
-    boolean m_textWrap;
-    uint8_t m_rotation;
-    boolean m_inverted;
-    boolean m_inTransaction;
+    // Private multi-buffer helpers
+    void _initializeMultiBuffer();
+    void _cleanupMultiBuffer();
+#endif
 
-    // Font support
-    const GFXfont *m_pFont;  ///< Current font (NULL = default bitmap font)
-    boolean m_fontSizeMultiplied;  ///< Whether to scale font with textSize
+    // ── Common members ───────────────────────────────────────────────────────
+    int16_t  m_width;
+    int16_t  m_height;
+
+    int16_t  m_cursorX, m_cursorY;
+    uint16_t m_textColor, m_textBgColor;
+    uint8_t  m_textSizeX, m_textSizeY;
+    boolean  m_textWrap;
+    uint8_t  m_rotation;
+    boolean  m_inverted;
+    boolean  m_inTransaction;
+
+    const GFXfont *m_pFont;
+    boolean        m_fontSizeMultiplied;
 };
 
-#endif // CIRCLE_GFX_H
+#endif // GFX_H
